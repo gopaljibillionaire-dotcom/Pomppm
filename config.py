@@ -17,10 +17,15 @@ ADMIN_IDS = _csv_ints(os.getenv("ADMIN_IDS", ""))
 MONGO_URI = os.getenv("MONGO_URI", "").strip()
 MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "telegram_selling_bot").strip()
 SUPPORT_URL = os.getenv("SUPPORT_URL", "").strip()
+PROOF_CHANNEL_LINK = os.getenv("PROOF_CHANNEL_LINK", "https://t.sch/your_proof_channel").strip()
+PAYTM_UPI_ID = os.getenv("PAYTM_UPI_ID", "yourmerchant@paytm").strip()
+PAYTM_MERCHANT_NAME = os.getenv("PAYTM_MERCHANT_NAME", "Store Merchant").strip()
 
 # Configure only after obtaining authorized credentials and the provider's API specification.
-PAYMENT_API_URL = os.getenv("PAYMENT_API_URL", "").strip()       # Create checkout/payment endpoint
-PAYMENT_STATUS_URL = os.getenv("PAYMENT_STATUS_URL", "").strip() # Status endpoint base; order ID appended
+PAYMENT_API_URL = os.getenv("PAYMENT_API_URL", "").strip()       
+PAYMENT_STATUS_URL = os.getenv("PAYMENT_STATUS_URL", "").strip() 
 PAYMENT_API_KEY = os.getenv("PAYMENT_API_KEY", "").strip()
 PAYMENT_WEBHOOK_URL = os.getenv("PAYMENT_WEBHOOK_URL", "").strip()
 PAYMENT_CURRENCY = os.getenv("PAYMENT_CURRENCY", "INR").strip().upper()
+
+    
