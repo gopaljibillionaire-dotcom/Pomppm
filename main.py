@@ -18,6 +18,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from motor.motor_asyncio import AsyncIOMotorClient
 import qrcode
 from io import BytesIO
+from bson import ObjectId
 
 import config
 
@@ -32,7 +33,7 @@ products = db.products
 orders = db.orders
 users = db.users
 
-# Premium custom emojis from user request & config
+# --- Premium Emojis Setup ---
 EMOJI_HEART = "5465262274031659421"
 EMOJI_TEXT = "5258500400918587241"
 EMOJI_GIFT = "5355193051193059834"
@@ -40,9 +41,13 @@ EMOJI_SHOP = "5451937962629544243"
 EMOJI_SUPPORT = "5395804191769763641"
 EMOJI_START = "5366119022792294762"
 EMOJI_18PLUS = "5201920821043422202"
+EMOJI_THUNDER = "5992366958681527437"
+EMOJI_WATER = "5834455158829879029"
+EMOJI_PIN = "5292291996717690768"
+EMOJI_MONEY = "💰" # Standard fallback
+EMOJI_FIRE = "🔥"
 
 ADMIN_IDS = set(config.ADMIN_IDS)
-COLOR_STYLES = {"success": "success", "danger": "danger", "primary": "primary"}
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
@@ -53,40 +58,50 @@ def e(emoji_id: str, fallback: str) -> str:
 def money(amount) -> str:
     return f"{Decimal(str(amount)):.2f}"
 
+# --- Keyboards ---
+
 def home_kb_for(user_id: int):
     b = InlineKeyboardBuilder()
-    # Large Button on top to show all products list
-    b.button(text="🛍️ View All Products (GC Craft Videos & More)", callback_data="show_all_products")
-    b.button(text="💳 Topup Wallet", callback_data="topup_wallet")
-    b.button(text="❓ How to Buy", callback_data="how_to_buy")
+    b.button(text="ALL IN ONE 🛍️ - ₹249 ₹199", callback_data="show_all_products", style="danger")
+    b.button(text="💳 Topup Wallet", callback_data="topup_wallet", style="primary")
+    b.button(text="❓ How to Buy", callback_data="how_to_buy", style="success")
     if config.SUPPORT_URL:
-        b.button(text="🆘 Support", url=config.SUPPORT_URL)
+        b.button(text="🆘 Support", url=config.SUPPORT_URL, style="danger")
     else:
-        b.button(text="🆘 Support", callback_data="support")
+        b.button(text="🆘 Support", callback_data="support", style="danger")
     if getattr(config, "PROOF_CHANNEL_URL", ""):
-        b.button(text="🛡️ Proof Channel", url=config.PROOF_CHANNEL_URL)
+        b.button(text="🛡️ Proof Channel", url=config.PROOF_CHANNEL_URL, style="primary")
     if is_admin(user_id):
-        b.button(text="⚙️ Admin Panel", callback_data="admin")
+        b.button(text="⚙️ Admin Panel", callback_data="admin", style="success")
     b.adjust(1, 2, 2, 1)
     return b.as_markup()
 
 def product_kb(product_id: str, color: str):
-    style = COLOR_STYLES.get(color, "primary")
-    kwargs = {"text": f"{e(EMOJI_SHOP, '🛍️')} Buy Now via Paytm/Gateway", "callback_data": f"buy:{product_id}"}
-    try:
-        button = InlineKeyboardButton(**kwargs, style=style)
-    except (TypeError, ValueError):
-        button = InlineKeyboardButton(**kwargs)
+    style = color if color in ["success", "danger", "primary"] else "primary"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [button]
+        [InlineKeyboardButton(text="💎 Buy Now", callback_data=f"buy:{product_id}", style=style)]
     ])
 
-def payment_keyboard(order_id: str):
+def payment_keyboard(order_id: str, is_manual: bool = False):
+    buttons = []
+    if is_manual:
+        buttons.append([InlineKeyboardButton(text="✅ I Have Paid", callback_data=f"manual_paid:{order_id}", style="success")])
+        buttons.append([InlineKeyboardButton(text="🔄 Check Payment Status", callback_data=f"checkpay:{order_id}", style="primary")])
+    else:
+        buttons.append([InlineKeyboardButton(text="🔄 Check Payment Status", callback_data=f"checkpay:{order_id}", style="primary")])
+    
+    buttons.append([InlineKeyboardButton(text="🏠 Main Menu", callback_data="home", style="danger")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def admin_approval_kb(order_id: str, user_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Check Payment Status", callback_data=f"checkpay:{order_id}")],
-        [InlineKeyboardButton(text="✍️ Submit UTR", callback_data=f"utr:{order_id}")],
-        [InlineKeyboardButton(text="🏠 Main Menu", callback_data="home")],
+        [
+            InlineKeyboardButton(text="✅ Approve", callback_data=f"adm_approve:{order_id}:{user_id}", style="success"),
+            InlineKeyboardButton(text="❌ Reject", callback_data=f"adm_reject:{order_id}:{user_id}", style="danger")
+        ]
     ])
+
+# --- Helper Functions ---
 
 def qr_png(data: str) -> bytes:
     img = qrcode.make(data)
@@ -95,34 +110,31 @@ def qr_png(data: str) -> bytes:
     return out.getvalue()
 
 async def make_payment(order_id: str, amount: str, user_id: int):
-    if not (config.PAYMENT_API_URL and config.PAYMENT_API_KEY):
+    if not (config.FAMPAY_API_URL and config.FAMPAY_API_KEY):
         return None
     payload = {
         "order_id": order_id,
         "amount": amount,
-        "currency": config.PAYMENT_CURRENCY,
+        "currency": "INR",
         "customer": {"telegram_user_id": str(user_id)},
-        "callback_url": config.PAYMENT_WEBHOOK_URL or None,
     }
-    headers = {"Authorization": f"Bearer {config.PAYMENT_API_KEY}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {config.FAMPAY_API_KEY}", "Content-Type": "application/json"}
     timeout = aiohttp.ClientTimeout(total=20)
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(config.PAYMENT_API_URL, json=payload, headers=headers) as resp:
+            async with session.post(config.FAMPAY_API_URL, json=payload, headers=headers) as resp:
                 body = await resp.json(content_type=None)
                 if resp.status >= 300:
-                    log.error("Payment provider create failed: status=%s body=%s", resp.status, body)
                     return None
                 return body
     except Exception:
-        log.exception("Payment creation request failed")
         return None
 
-async def verify_payment(order_doc):
-    if not (config.PAYMENT_STATUS_URL and config.PAYMENT_API_KEY):
+async def verify_payment_gateway(order_doc):
+    if not (config.FAMPAY_STATUS_URL and config.FAMPAY_API_KEY):
         return False
-    url = config.PAYMENT_STATUS_URL.rstrip("/") + "/" + order_doc["order_id"]
-    headers = {"Authorization": f"Bearer {config.PAYMENT_API_KEY}"}
+    url = config.FAMPAY_STATUS_URL.rstrip("/") + "/" + order_doc["order_id"]
+    headers = {"Authorization": f"Bearer {config.FAMPAY_API_KEY}"}
     timeout = aiohttp.ClientTimeout(total=15)
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -136,7 +148,6 @@ async def verify_payment(order_doc):
                     and Decimal(str(body.get("amount", "0"))) == Decimal(str(order_doc["amount"]))
                 )
     except Exception:
-        log.exception("Provider verification failed")
         return False
 
 async def deliver_order(order_doc):
@@ -147,11 +158,12 @@ async def deliver_order(order_doc):
     )
     if not claimed:
         return
-    from bson import ObjectId
     product = await products.find_one({"_id": claimed["product_id"], "active": True})
     if not product:
         await bot.send_message(claimed["user_id"], f"{e(EMOJI_HEART, '❤️')} Payment confirmed, but this product is currently unavailable. Contact support.")
         return
+        
+    # Send the actual link to the user
     await bot.send_message(
         claimed["user_id"],
         f"{e(EMOJI_GIFT, '🎁')} <b>Payment Verified & Delivered Successfully!</b>\n\n"
@@ -160,13 +172,28 @@ async def deliver_order(order_doc):
         disable_web_page_preview=True,
     )
 
+# --- Handlers ---
+
 @dp.message(CommandStart())
 async def start(message: Message):
-    await users.update_one({"_id": message.from_user.id}, {"$set": {"name": message.from_user.full_name, "username": message.from_user.username}}, upsert=True)
+    await users.update_one(
+        {"_id": message.from_user.id}, 
+        {"$set": {"name": message.from_user.full_name, "username": message.from_user.username}}, 
+        upsert=True
+    )
     
     welcome_text = (
-        f"{e(EMOJI_START, '🚀')} <b>ULTIMATE PREMIUM STORE</b> {e(EMOJI_HEART, '💖')}\n"
-        f"{e(EMOJI_TEXT, '✨')} <i>Click the button below to view all exclusive products instantly!</i> {e(EMOJI_18PLUS, '🔞')}"
+        f"{e(EMOJI_START, '🚀')} <b>WELCOME TO PREMIUM ADULT COLLECTION</b> {e(EMOJI_HEART, '💖')}\n\n"
+        f"👋 Hello <b>{message.from_user.full_name}</b>!\n"
+        f"🥇 <b>PREMIUM ADULT COLLECTION</b> 🎬\n\n"
+        f"{e(EMOJI_FIRE, '🔥')} <b>1 Lakh+ videos At just ₹199/-</b>\n"
+        f"🛒 All Categories in One Package\n\n"
+        f"➡️ ONE TIME PAYMENT\n"
+        f"♾️ LIFETIME ACCESS\n"
+        f"✅ DIRECT VIDEOS GROUPS\n\n"
+        f"Starting AT ₹29 /- Don't miss it !! 👑\n\n"
+        f"<b>LIMITED TIME PAID GROUP ENTRY ONLY 199</b> 🙋‍♂️\n\n"
+        f"⬇️ <b>Choose a plan below:</b>"
     )
     await message.answer(welcome_text, reply_markup=home_kb_for(message.from_user.id))
 
@@ -174,25 +201,20 @@ async def start(message: Message):
 async def show_all_products(call: CallbackQuery):
     items = await products.find({"active": True}).sort("created_at", -1).to_list(length=20)
     if not items:
-        # Seed default product if empty for easy demo/testing (GC Craft Videos @ 499)
-        default_prod = {
-            "name": "GC Craft Videos",
-            "price": "499.00",
-            "currency": "INR",
-            "url": "https://t.me/+example_access_link",
-            "description": "Exclusive bundle of GC craft videos and premium tutorials.",
-            "color": "primary",
-            "active": True,
-            "created_at": time.time()
-        }
-        await products.insert_one(default_prod)
-        items = [default_prod]
+        # Seed default products if empty for easy demo/testing
+        default_prods = [
+            {"name": "ALL MIX 😍⚡", "price": "29.00", "currency": "INR", "url": "https://t.me/+example1", "description": "All mix premium collection.", "color": "danger", "active": True, "created_at": time.time()},
+            {"name": "INDIAN DESI 😍⚡", "price": "49.00", "currency": "INR", "url": "https://t.me/+example2", "description": "Indian Desi exclusive.", "color": "primary", "active": True, "created_at": time.time()},
+            {"name": "PUNJABI 😍⚡", "price": "79.00", "currency": "INR", "url": "https://t.me/+example3", "description": "Punjabi collection.", "color": "danger", "active": True, "created_at": time.time()},
+            {"name": "ALL IN ONE ❤️🛍️", "price": "199.00", "currency": "INR", "url": "https://t.me/+example4", "description": "1 Lakh+ videos, Lifetime access.", "color": "danger", "active": True, "created_at": time.time()}
+        ]
+        await products.insert_many(default_prods)
+        items = default_prods
 
-    await call.message.answer(f"{e(EMOJI_SHOP, '🛍️')} <b>Available Products Catalog:</b>")
+    await call.message.answer(f"{e(EMOJI_SHOP, '🛍️')} <b>Available Premium Collections:</b>")
     for p in items:
         product_desc = (
-            f"<b>{e(EMOJI_SHOP, '🔥')} {p['name']}</b>\n"
-            f"<b>Price:</b> <code>{p.get('currency', 'INR')} {money(p['price'])}</code>\n"
+            f"💎💎 <b>{p['name']}</b> — <s>₹{money(p['price'])}</s> <b>₹{money(p['price'])}</b> {e(EMOJI_FIRE, '🔥')}\n"
             f"<i>{p.get('description', '')}</i>"
         )
         await call.message.answer(
@@ -207,19 +229,9 @@ async def home(call: CallbackQuery):
     await call.message.answer(f"{e(EMOJI_START, '🏠')} <b>Main Menu Dashboard</b>", reply_markup=home_kb_for(call.from_user.id))
     await call.answer()
 
-@dp.callback_query(F.data == "topup_wallet")
-async def topup_wallet(call: CallbackQuery):
-    await call.message.answer(
-        f"{e(EMOJI_GIFT, '💳')} <b>Wallet Topup System</b>\n\n"
-        f"Send the amount you wish to add to your wallet (e.g., <code>100</code>, <code>500</code> INR):",
-    )
-    await users.update_one({"_id": call.from_user.id}, {"$set": {"awaiting_topup": True}})
-    await call.answer()
-
 @dp.callback_query(F.data.startswith("buy:"))
 async def buy_product(call: CallbackQuery):
     product_id = call.data.split(":", 1)[1]
-    from bson import ObjectId
     try:
         p = await products.find_one({"_id": ObjectId(product_id), "active": True})
     except Exception:
@@ -242,11 +254,16 @@ async def buy_product(call: CallbackQuery):
         "created_at": time.time(),
     }
     
+    # Try Automatic Gateway First
     provider = await make_payment(order_id, order["amount"], call.from_user.id)
+    is_manual = True
+    
     if provider:
         order["payment_url"] = provider.get("payment_url") or provider.get("checkout_url")
         order["qr_text"] = provider.get("qr_text") or provider.get("upi_uri")
+        is_manual = False
     
+    # Fallback to Manual UPI QR if gateway is not configured
     if not order.get("qr_text"):
         upi_id = getattr(config, "PAYTM_UPI_ID", "merchant@paytm")
         order["qr_text"] = f"upi://pay?pa={upi_id}&pn=Store&am={order['amount']}&cu={order['currency']}&tr={order_id}"
@@ -254,13 +271,22 @@ async def buy_product(call: CallbackQuery):
     await orders.insert_one(order)
 
     photo = BufferedInputFile(qr_png(order["qr_text"]), filename="paytm-qr.png")
+    
+    caption = (
+        f"{e(EMOJI_SHOP, '🛍️')} <b>Payment Required</b>\n\n"
+        f"Order ID: <code>{order_id}</code>\n"
+        f"Amount: <b>{order['currency']} {order['amount']}</b>\n\n"
+        f"👇 <b>Scan the QR via any UPI App (Paytm/GPay/PhonePe)</b>\n\n"
+    )
+    if is_manual:
+        caption += f"⚠️ <i>Automatic verification is off. Please pay and click 'I Have Paid' below.</i>"
+    else:
+        caption += f"⚡ <i>Automatic verification active. Click 'Check Payment Status' after paying.</i>"
+
     await call.message.answer_photo(
         photo,
-        caption=f"{e(EMOJI_SHOP, '🛍️')} <b>Paytm / UPI Dynamic QR Code Generated</b>\n\n"
-                f"Order ID: <code>{order_id}</code>\n"
-                f"Amount: <b>{order['currency']} {order['amount']}</b>\n\n"
-                f"Scan via Paytm/GPay/PhonePe or click below to check verification instantly!",
-        reply_markup=payment_keyboard(order_id),
+        caption=caption,
+        reply_markup=payment_keyboard(order_id, is_manual=is_manual),
     )
     await call.answer()
 
@@ -275,34 +301,143 @@ async def check_payment(call: CallbackQuery):
         await deliver_order(order)
         await call.answer("Payment already verified.")
         return
-    if await verify_payment(order):
+        
+    if await verify_payment_gateway(order):
         await orders.update_one(
             {"order_id": order_id, "status": "pending"},
-            {"$set": {"status": "paid", "verified_at": time.time(), "verification_method": "webhook_gateway"}},
+            {"$set": {"status": "paid", "verified_at": time.time(), "verification_method": "gateway"}},
         )
         fresh = await orders.find_one({"order_id": order_id})
         await deliver_order(fresh)
-        await call.answer("Payment verified successfully!")
+        await call.answer("Payment verified successfully! Link sent.")
     else:
-        await call.answer("Payment not detected yet. Complete payment or submit UTR.", show_alert=True)
+        await call.answer("Payment not detected yet. Complete payment or submit proof.", show_alert=True)
 
-@dp.callback_query(F.data.startswith("utr:"))
-async def ask_utr(call: CallbackQuery):
+# --- Manual Payment Verification Flow ---
+
+@dp.callback_query(F.data.startswith("manual_paid:"))
+async def manual_paid(call: CallbackQuery):
     order_id = call.data.split(":", 1)[1]
-    await users.update_one({"_id": call.from_user.id}, {"$set": {"awaiting_utr_for": order_id}})
-    await call.message.answer(f"{e(EMOJI_TEXT, '✍️')} Please send your Paytm UTR / Reference Number for order <code>{order_id}</code>:")
+    await users.update_one({"_id": call.from_user.id}, {"$set": {"awaiting_proof_for": order_id}})
+    await call.message.answer(
+        f"{e(EMOJI_PIN, '📌')} <b>Please send your Payment Proof (Screenshot) and UTR / Transaction ID.</b>\n\n"
+        f"Send the screenshot first, then the UTR number, or send them together as a caption."
+    )
     await call.answer()
+
+@dp.message(F.photo | F.document)
+async def handle_proof_photo(message: Message):
+    user = await users.find_one({"_id": message.from_user.id})
+    if not user or not user.get("awaiting_proof_for"):
+        return
+    
+    order_id = user["awaiting_proof_for"]
+    order = await orders.find_one({"order_id": order_id, "user_id": message.from_user.id})
+    if not order:
+        return
+
+    file_id = message.photo[-1].file_id if message.photo else message.document.file_id
+    caption = message.caption or "No UTR provided in caption."
+    
+    await orders.update_one(
+        {"order_id": order_id},
+        {"$set": {"proof_file_id": file_id, "utr": caption, "status": "pending_approval", "proof_submitted_at": time.time()}}
+    )
+    
+    await users.update_one({"_id": message.from_user.id}, {"$unset": {"awaiting_proof_for": ""}})
+    
+    # Notify User
+    await message.answer(f"{e(EMOJI_HEART, '✅')} Proof submitted! Admin will verify and approve your order shortly.")
+    
+    # Notify Admins
+    admin_msg = (
+        f"🚨 <b>New Payment Proof Submitted</b>\n\n"
+        f"Order ID: <code>{order_id}</code>\n"
+        f"User: {message.from_user.full_name} (@{message.from_user.username})\n"
+        f"Product: {order['product_name']}\n"
+        f"Amount: ₹{order['amount']}\n"
+        f"UTR/Caption: {caption}\n\n"
+        f"Please verify and approve/reject below."
+    )
+    
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_photo(
+                admin_id, 
+                photo=file_id, 
+                caption=admin_msg, 
+                reply_markup=admin_approval_kb(order_id, message.from_user.id)
+            )
+        except Exception as e:
+            log.error(f"Failed to send proof to admin {admin_id}: {e}")
+
+@dp.callback_query(F.data.startswith("adm_approve:"))
+async def admin_approve(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("Unauthorized", show_alert=True)
+        return
+        
+    _, order_id, user_id = call.data.split(":")
+    order = await orders.find_one({"order_id": order_id})
+    
+    if not order:
+        await call.answer("Order not found.", show_alert=True)
+        return
+        
+    await orders.update_one(
+        {"order_id": order_id},
+        {"$set": {"status": "paid", "verified_at": time.time(), "verification_method": "manual_admin"}}
+    )
+    
+    # Deliver order
+    fresh_order = await orders.find_one({"order_id": order_id})
+    await deliver_order(fresh_order)
+    
+    await call.message.edit_caption(caption=call.message.caption + "\n\n✅ <b>Approved by Admin</b>")
+    await call.answer("Order Approved and User Notified.")
+
+@dp.callback_query(F.data.startswith("adm_reject:"))
+async def admin_reject(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("Unauthorized", show_alert=True)
+        return
+        
+    _, order_id, user_id = call.data.split(":")
+    
+    await orders.update_one(
+        {"order_id": order_id},
+        {"$set": {"status": "rejected", "rejected_at": time.time()}}
+    )
+    
+    try:
+        await bot.send_message(
+            int(user_id),
+            f"{e(EMOJI_WATER, '💦')} <b>Payment Rejected!</b>\n\n"
+            f"Your proof for Order <code>{order_id}</code> was rejected by the admin.\n"
+            f"Please contact support if you believe this is a mistake."
+        )
+    except Exception as e:
+        log.error(f"Could not notify user {user_id}: {e}")
+        
+    await call.message.edit_caption(caption=call.message.caption + "\n\n❌ <b>Rejected by Admin</b>")
+    await call.answer("Order Rejected and User Notified.")
+
+# --- Informational Handlers ---
 
 @dp.callback_query(F.data == "how_to_buy")
 async def how_to_buy(call: CallbackQuery):
-    await call.message.answer(
-        f"{e(EMOJI_SUPPORT, '❓')} <b>How to Buy Guide</b>\n\n"
-        f"1. Click the <b>View All Products</b> button on the main menu.\n"
-        f"2. Select your desired product and click <b>Buy Now</b>.\n"
-        f"3. Scan and pay using Paytm or any UPI app via the generated QR.\n"
-        f"4. Click <b>Check Payment Status</b> or submit your UTR.\n"
-        f"5. Instant delivery of your item link right inside the bot!"
+    text = (
+        f"🛒 <b>How to Buy from PREMIUM STORE</b>\n\n"
+        f"1️⃣ Start the Bot\n"
+        f"2️⃣ Select your Plan\n"
+        f"3️⃣ Click Pay Now & scan the QR\n"
+        f"4️⃣ Pay the exact amount via UPI\n"
+        f"5️⃣ Click Verify Payment or I Have Paid\n"
+        f"6️⃣ Send the payment screenshot to the bot\n"
+        f"✅ Done! You'll receive your link within 5-10 minutes\n\n"
+        f"⚠️ <b>IMPORTANT:</b> Always pay the exact amount shown by the bot."
     )
+    await call.message.answer(text)
     await call.answer()
 
 @dp.callback_query(F.data == "support")
@@ -310,78 +445,7 @@ async def support(call: CallbackQuery):
     await call.message.answer(f"{e(EMOJI_SUPPORT, '🆘')} Support contact: {config.SUPPORT_URL or 'Contact admin directly.'}")
     await call.answer()
 
-@dp.message(F.text)
-async def text_router(message: Message):
-    user = await users.find_one({"_id": message.from_user.id})
-    
-    if user and user.get("awaiting_topup"):
-        await users.update_one({"_id": message.from_user.id}, {"$unset": {"awaiting_topup": ""}})
-        await message.answer(f"{e(EMOJI_GIFT, '💳')} Topup request received for amount: <b>{message.text}</b>. Please complete your transaction.")
-        return
-
-    if user and user.get("awaiting_utr_for"):
-        order_id = user["awaiting_utr_for"]
-        utr = message.text.strip()
-        await orders.update_one(
-            {"order_id": order_id, "user_id": message.from_user.id, "status": "pending"},
-            {"$set": {"utr": utr, "utr_submitted_at": time.time()}},
-        )
-        await message.answer(f"{e(EMOJI_HEART, '✅')} UTR <code>{utr}</code> saved successfully. Admins will verify your transaction shortly.")
-        await users.update_one({"_id": message.from_user.id}, {"$unset": {"awaiting_utr_for": ""}})
-        return
-
-    # Admin flow handling (Add Product, Edit Price, etc.)
-    if is_admin(message.from_user.id) and user and user.get("admin_flow"):
-        flow = user["admin_flow"]
-        action = flow.get("action")
-        
-        if action == "add":
-            step = flow["step"]
-            data = flow["data"]
-            text_value = message.text.strip()
-            if step == "name":
-                data["name"] = text_value[:100]
-                flow["step"] = "price"
-                prompt = "Send price as a positive number (e.g. 499)."
-            elif step == "price":
-                data["price"] = money(Decimal(text_value))
-                flow["step"] = "currency"
-                prompt = "Send currency (e.g. INR):"
-            elif step == "currency":
-                data["currency"] = text_value.upper()
-                flow["step"] = "url"
-                prompt = "Send product delivery URL (https://...)."
-            elif step == "url":
-                data["url"] = text_value
-                flow["step"] = "description"
-                prompt = "Send product description."
-            elif step == "description":
-                data["description"] = text_value
-                flow["step"] = "color"
-                prompt = "Choose color style: success, danger, or primary."
-            elif step == "color":
-                data["color"] = text_value
-                await products.insert_one({**data, "active": True, "created_at": time.time()})
-                await users.update_one({"_id": message.from_user.id}, {"$unset": {"admin_flow": ""}})
-                await message.answer(f"✅ Product added successfully!", reply_markup=home_kb_for(message.from_user.id))
-                return
-            await users.update_one({"_id": message.from_user.id}, {"$set": {"admin_flow": flow}})
-            await message.answer(prompt)
-            return
-
-        elif action == "edit_price":
-            product_id = flow["product_id"]
-            try:
-                new_price = money(Decimal(message.text.strip()))
-                from bson import ObjectId
-                await products.update_one({"_id": ObjectId(product_id)}, {"$set": {"price": new_price}})
-                await users.update_one({"_id": message.from_user.id}, {"$unset": {"admin_flow": ""}})
-                await message.answer(f"✅ Product price updated successfully to {new_price}!", reply_markup=home_kb_for(message.from_user.id))
-            except InvalidOperation:
-                await message.answer("Invalid price format. Send a valid number (e.g. 499):")
-            return
-
-    await message.answer(f"{e(EMOJI_START, '🚀')} Send /start to open the store dashboard.")
+# --- Admin Panel ---
 
 @dp.callback_query(F.data == "admin")
 async def admin_panel(call: CallbackQuery):
@@ -389,12 +453,12 @@ async def admin_panel(call: CallbackQuery):
         await call.answer("Unauthorized", show_alert=True)
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Add Product", callback_data="admin_add")],
-        [InlineKeyboardButton(text="✏️ Edit Product Price", callback_data="admin_list_edit")],
-        [InlineKeyboardButton(text="🗑️ Delete Product", callback_data="admin_list_delete")],
-        [InlineKeyboardButton(text="🏠 Main Menu", callback_data="home")],
+        [InlineKeyboardButton(text="➕ Add Product", callback_data="admin_add", style="success")],
+        [InlineKeyboardButton(text="✏️ Edit Product Price", callback_data="admin_list_edit", style="primary")],
+        [InlineKeyboardButton(text="🗑️ Delete Product", callback_data="admin_list_delete", style="danger")],
+        [InlineKeyboardButton(text="🏠 Main Menu", callback_data="home", style="primary")],
     ])
-    await call.message.answer(f"{e(EMOJI_TEXT, '⚙️')} <b>Admin Control Panel</b>", reply_markup=kb)
+    await call.message.answer(f"⚙️ <b>Admin Control Panel</b>", reply_markup=kb)
     await call.answer()
 
 @dp.callback_query(F.data == "admin_add")
@@ -415,7 +479,7 @@ async def admin_list_edit(call: CallbackQuery):
         return
     b = InlineKeyboardBuilder()
     for p in items:
-        b.button(text=f"✏️ {p['name']} ({p.get('currency', 'INR')} {p['price']})", callback_data=f"edpr:{p['_id']}")
+        b.button(text=f"✏️ {p['name']} (₹{p['price']})", callback_data=f"edpr:{p['_id']}", style="primary")
     b.adjust(1)
     await call.message.answer("Select product to edit price:", reply_markup=b.as_markup())
     await call.answer()
@@ -439,7 +503,7 @@ async def admin_list_delete(call: CallbackQuery):
         return
     b = InlineKeyboardBuilder()
     for p in items:
-        b.button(text=f"🗑️ Delete {p['name']}", callback_data=f"delp:{p['_id']}")
+        b.button(text=f"🗑️ Delete {p['name']}", callback_data=f"delp:{p['_id']}", style="danger")
     b.adjust(1)
     await call.message.answer("Select product to delete:", reply_markup=b.as_markup())
     await call.answer()
@@ -449,7 +513,6 @@ async def delete_product(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         return
     product_id = call.data.split(":", 1)[1]
-    from bson import ObjectId
     try:
         await products.delete_one({"_id": ObjectId(product_id)})
         await call.message.answer("✅ Product deleted successfully!")
@@ -457,11 +520,109 @@ async def delete_product(call: CallbackQuery):
         await call.message.answer("Failed to delete product.")
     await call.answer()
 
+# --- Text Router (Handles Admin Flow & User Proofs) ---
+
+@dp.message(F.text)
+async def text_router(message: Message):
+    user = await users.find_one({"_id": message.from_user.id})
+    
+    # Handle UTR text if user sends it without photo
+    if user and user.get("awaiting_proof_for"):
+        order_id = user["awaiting_proof_for"]
+        utr = message.text.strip()
+        await orders.update_one(
+            {"order_id": order_id, "user_id": message.from_user.id},
+            {"$set": {"utr": utr, "status": "pending_approval", "proof_submitted_at": time.time()}}
+        )
+        await message.answer(f"{e(EMOJI_HEART, '✅')} UTR <code>{utr}</code> saved. Admin will verify shortly.")
+        await users.update_one({"_id": message.from_user.id}, {"$unset": {"awaiting_proof_for": ""}})
+        
+        # Notify Admins
+        order = await orders.find_one({"order_id": order_id})
+        admin_msg = (
+            f"🚨 <b>New UTR Submitted</b>\n\n"
+            f"Order ID: <code>{order_id}</code>\n"
+            f"User: {message.from_user.full_name} (@{message.from_user.username})\n"
+            f"Product: {order['product_name']}\n"
+            f"Amount: ₹{order['amount']}\n"
+            f"UTR: {utr}\n\n"
+            f"Please verify and approve/reject below."
+        )
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(admin_id, admin_msg, reply_markup=admin_approval_kb(order_id, message.from_user.id))
+            except Exception as e:
+                log.error(f"Failed to send UTR to admin {admin_id}: {e}")
+        return
+
+    # Admin Add Product Flow
+    if is_admin(message.from_user.id) and user and user.get("admin_flow"):
+        flow = user["admin_flow"]
+        action = flow.get("action")
+        
+        if action == "add":
+            step = flow["step"]
+            data = flow["data"]
+            text_value = message.text.strip()
+            
+            if step == "name":
+                data["name"] = text_value[:100]
+                flow["step"] = "price"
+                prompt = "Send price as a positive number (e.g. 499)."
+            elif step == "price":
+                try:
+                    data["price"] = money(Decimal(text_value))
+                    flow["step"] = "currency"
+                    prompt = "Send currency (e.g. INR):"
+                except InvalidOperation:
+                    await message.answer("Invalid price. Send a valid number:")
+                    return
+            elif step == "currency":
+                data["currency"] = text_value.upper()
+                flow["step"] = "url"
+                prompt = "Send product delivery URL (https://...). This is the link users get after payment."
+            elif step == "url":
+                data["url"] = text_value
+                flow["step"] = "description"
+                prompt = "Send product description."
+            elif step == "description":
+                data["description"] = text_value
+                flow["step"] = "color"
+                prompt = "Choose color style: success, danger, or primary."
+            elif step == "color":
+                data["color"] = text_value.lower()
+                await products.insert_one({**data, "active": True, "created_at": time.time()})
+                await users.update_one({"_id": message.from_user.id}, {"$unset": {"admin_flow": ""}})
+                await message.answer(f"✅ Product added successfully!", reply_markup=home_kb_for(message.from_user.id))
+                return
+                
+            await users.update_one({"_id": message.from_user.id}, {"$set": {"admin_flow": flow}})
+            await message.answer(prompt)
+            return
+
+        elif action == "edit_price":
+            product_id = flow["product_id"]
+            try:
+                new_price = money(Decimal(message.text.strip()))
+                await products.update_one({"_id": ObjectId(product_id)}, {"$set": {"price": new_price}})
+                await users.update_one({"_id": message.from_user.id}, {"$unset": {"admin_flow": ""}})
+                await message.answer(f"✅ Product price updated successfully to ₹{new_price}!", reply_markup=home_kb_for(message.from_user.id))
+            except InvalidOperation:
+                await message.answer("Invalid price format. Send a valid number (e.g. 499):")
+            return
+
+    await message.answer(f"{e(EMOJI_START, '🚀')} Send /start to open the store dashboard.")
+
 async def main():
     if not config.BOT_TOKEN or not config.MONGO_URI:
         raise RuntimeError("Set BOT_TOKEN and MONGO_URI in environment variables.")
+    
+    # Ensure indexes
+    await orders.create_index("order_id", unique=True)
+    await users.create_index("_id")
+    
     await bot.delete_webhook(drop_pending_updates=False)
-    log.info("Store Bot started successfully with dynamic catalog, Admin panel & Paytm QR.")
+    log.info("Premium Store Bot started successfully.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
