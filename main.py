@@ -55,6 +55,8 @@ def money(amount) -> str:
 
 def home_kb_for(user_id: int):
     b = InlineKeyboardBuilder()
+    # Large Button on top to show all products list
+    b.button(text="🛍️ View All Products (GC Craft Videos & More)", callback_data="show_all_products")
     b.button(text="💳 Topup Wallet", callback_data="topup_wallet")
     b.button(text="❓ How to Buy", callback_data="how_to_buy")
     if config.SUPPORT_URL:
@@ -65,7 +67,7 @@ def home_kb_for(user_id: int):
         b.button(text="🛡️ Proof Channel", url=config.PROOF_CHANNEL_URL)
     if is_admin(user_id):
         b.button(text="⚙️ Admin Panel", callback_data="admin")
-    b.adjust(2, 2, 1)
+    b.adjust(1, 2, 2, 1)
     return b.as_markup()
 
 def product_kb(product_id: str, color: str):
@@ -145,6 +147,7 @@ async def deliver_order(order_doc):
     )
     if not claimed:
         return
+    from bson import ObjectId
     product = await products.find_one({"_id": claimed["product_id"], "active": True})
     if not product:
         await bot.send_message(claimed["user_id"], f"{e(EMOJI_HEART, '❤️')} Payment confirmed, but this product is currently unavailable. Contact support.")
@@ -161,41 +164,47 @@ async def deliver_order(order_doc):
 async def start(message: Message):
     await users.update_one({"_id": message.from_user.id}, {"$set": {"name": message.from_user.full_name, "username": message.from_user.username}}, upsert=True)
     
-    # Send welcome text with over-loaded custom premium emojis & text sizing
     welcome_text = (
         f"{e(EMOJI_START, '🚀')} <b>ULTIMATE PREMIUM STORE</b> {e(EMOJI_HEART, '💖')}\n"
-        f"{e(EMOJI_TEXT, '✨')} <i>Explore our top exclusive products below instantly!</i> {e(EMOJI_18PLUS, '🔞')}\n"
-        f"----------------------------------------------"
+        f"{e(EMOJI_TEXT, '✨')} <i>Click the button below to view all exclusive products instantly!</i> {e(EMOJI_18PLUS, '🔞')}"
     )
     await message.answer(welcome_text, reply_markup=home_kb_for(message.from_user.id))
 
-    # Display products directly right under /start command
-    items = await products.find({"active": True}).sort("created_at", -1).to_list(length=10)
+@dp.callback_query(F.data == "show_all_products")
+async def show_all_products(call: CallbackQuery):
+    items = await products.find({"active": True}).sort("created_at", -1).to_list(length=20)
     if not items:
-        await message.answer(f"{e(EMOJI_SHOP, '🛍️')} <b>No products available at the moment. Check back soon!</b>")
-    else:
-        for p in items:
-            product_desc = (
-                f"<b>{e(EMOJI_SHOP, '🔥')} {p['name']}</b>\n"
-                f"<b>Price:</b> <code>{p['currency']} {money(p['price'])}</code>\n"
-                f"<i>{p.get('description', '')}</i>"
-            )
-            await message.answer(
-                product_desc,
-                reply_markup=product_kb(str(p["_id"]), p.get("color", "primary")),
-                disable_web_page_preview=True,
-            )
+        # Seed default product if empty for easy demo/testing (GC Craft Videos @ 499)
+        default_prod = {
+            "name": "GC Craft Videos",
+            "price": "499.00",
+            "currency": "INR",
+            "url": "https://t.me/+example_access_link",
+            "description": "Exclusive bundle of GC craft videos and premium tutorials.",
+            "color": "primary",
+            "active": True,
+            "created_at": time.time()
+        }
+        await products.insert_one(default_prod)
+        items = [default_prod]
+
+    await call.message.answer(f"{e(EMOJI_SHOP, '🛍️')} <b>Available Products Catalog:</b>")
+    for p in items:
+        product_desc = (
+            f"<b>{e(EMOJI_SHOP, '🔥')} {p['name']}</b>\n"
+            f"<b>Price:</b> <code>{p.get('currency', 'INR')} {money(p['price'])}</code>\n"
+            f"<i>{p.get('description', '')}</i>"
+        )
+        await call.message.answer(
+            product_desc,
+            reply_markup=product_kb(str(p["_id"]), p.get("color", "primary")),
+            disable_web_page_preview=True,
+        )
+    await call.answer()
 
 @dp.callback_query(F.data == "home")
 async def home(call: CallbackQuery):
     await call.message.answer(f"{e(EMOJI_START, '🏠')} <b>Main Menu Dashboard</b>", reply_markup=home_kb_for(call.from_user.id))
-    items = await products.find({"active": True}).sort("created_at", -1).to_list(length=5)
-    for p in items:
-        await call.message.answer(
-            f"<b>{e(EMOJI_SHOP, '🔥')} {p['name']}</b>\nPrice: <code>{p['currency']} {money(p['price'])}</code>",
-            reply_markup=product_kb(str(p["_id"]), p.get("color", "primary")),
-            disable_web_page_preview=True,
-        )
     await call.answer()
 
 @dp.callback_query(F.data == "topup_wallet")
@@ -226,7 +235,7 @@ async def buy_product(call: CallbackQuery):
         "product_id": p["_id"],
         "product_name": p["name"],
         "amount": money(p["price"]),
-        "currency": p["currency"],
+        "currency": p.get("currency", "INR"),
         "status": "pending",
         "delivered": False,
         "utr": None,
@@ -238,14 +247,12 @@ async def buy_product(call: CallbackQuery):
         order["payment_url"] = provider.get("payment_url") or provider.get("checkout_url")
         order["qr_text"] = provider.get("qr_text") or provider.get("upi_uri")
     
-    # Fallback Paytm UPI string generation if dynamic gateway URI isn't provided directly
     if not order.get("qr_text"):
         upi_id = getattr(config, "PAYTM_UPI_ID", "merchant@paytm")
         order["qr_text"] = f"upi://pay?pa={upi_id}&pn=Store&am={order['amount']}&cu={order['currency']}&tr={order_id}"
 
     await orders.insert_one(order)
 
-    # Generate Paytm/Gateway QR code using Pillow
     photo = BufferedInputFile(qr_png(order["qr_text"]), filename="paytm-qr.png")
     await call.message.answer_photo(
         photo,
@@ -290,9 +297,9 @@ async def ask_utr(call: CallbackQuery):
 async def how_to_buy(call: CallbackQuery):
     await call.message.answer(
         f"{e(EMOJI_SUPPORT, '❓')} <b>How to Buy Guide</b>\n\n"
-        f"1. Choose any product listed directly on the start menu.\n"
-        f"2. Click <b>Buy Now</b> to generate the automated Paytm/UPI QR code.\n"
-        f"3. Scan and pay using Paytm or any UPI app.\n"
+        f"1. Click the <b>View All Products</b> button on the main menu.\n"
+        f"2. Select your desired product and click <b>Buy Now</b>.\n"
+        f"3. Scan and pay using Paytm or any UPI app via the generated QR.\n"
         f"4. Click <b>Check Payment Status</b> or submit your UTR.\n"
         f"5. Instant delivery of your item link right inside the bot!"
     )
@@ -323,37 +330,56 @@ async def text_router(message: Message):
         await users.update_one({"_id": message.from_user.id}, {"$unset": {"awaiting_utr_for": ""}})
         return
 
-    # Admin flow
+    # Admin flow handling (Add Product, Edit Price, etc.)
     if is_admin(message.from_user.id) and user and user.get("admin_flow"):
         flow = user["admin_flow"]
-        step = flow["step"]
-        data = flow["data"]
-        text_value = message.text.strip()
-        if step == "name":
-            data["name"] = text_value[:100]
-            flow["step"] = "price"
-            prompt = "Send price as a positive number (e.g. 149)."
-        elif step == "price":
-            data["price"] = money(Decimal(text_value))
-            flow["step"] = "url"
-            prompt = "Send product delivery URL (https://...)."
-        elif step == "url":
-            data["url"] = text_value
-            flow["step"] = "description"
-            prompt = "Send product description."
-        elif step == "description":
-            data["description"] = text_value
-            flow["step"] = "color"
-            prompt = "Choose color style: success, danger, or primary."
-        elif step == "color":
-            data["color"] = text_value
-            await products.insert_one({**data, "active": True, "created_at": time.time()})
-            await users.update_one({"_id": message.from_user.id}, {"$unset": {"admin_flow": ""}})
-            await message.answer(f"Product added successfully!", reply_markup=home_kb_for(message.from_user.id))
+        action = flow.get("action")
+        
+        if action == "add":
+            step = flow["step"]
+            data = flow["data"]
+            text_value = message.text.strip()
+            if step == "name":
+                data["name"] = text_value[:100]
+                flow["step"] = "price"
+                prompt = "Send price as a positive number (e.g. 499)."
+            elif step == "price":
+                data["price"] = money(Decimal(text_value))
+                flow["step"] = "currency"
+                prompt = "Send currency (e.g. INR):"
+            elif step == "currency":
+                data["currency"] = text_value.upper()
+                flow["step"] = "url"
+                prompt = "Send product delivery URL (https://...)."
+            elif step == "url":
+                data["url"] = text_value
+                flow["step"] = "description"
+                prompt = "Send product description."
+            elif step == "description":
+                data["description"] = text_value
+                flow["step"] = "color"
+                prompt = "Choose color style: success, danger, or primary."
+            elif step == "color":
+                data["color"] = text_value
+                await products.insert_one({**data, "active": True, "created_at": time.time()})
+                await users.update_one({"_id": message.from_user.id}, {"$unset": {"admin_flow": ""}})
+                await message.answer(f"✅ Product added successfully!", reply_markup=home_kb_for(message.from_user.id))
+                return
+            await users.update_one({"_id": message.from_user.id}, {"$set": {"admin_flow": flow}})
+            await message.answer(prompt)
             return
-        await users.update_one({"_id": message.from_user.id}, {"$set": {"admin_flow": flow}})
-        await message.answer(prompt)
-        return
+
+        elif action == "edit_price":
+            product_id = flow["product_id"]
+            try:
+                new_price = money(Decimal(message.text.strip()))
+                from bson import ObjectId
+                await products.update_one({"_id": ObjectId(product_id)}, {"$set": {"price": new_price}})
+                await users.update_one({"_id": message.from_user.id}, {"$unset": {"admin_flow": ""}})
+                await message.answer(f"✅ Product price updated successfully to {new_price}!", reply_markup=home_kb_for(message.from_user.id))
+            except InvalidOperation:
+                await message.answer("Invalid price format. Send a valid number (e.g. 499):")
+            return
 
     await message.answer(f"{e(EMOJI_START, '🚀')} Send /start to open the store dashboard.")
 
@@ -364,6 +390,8 @@ async def admin_panel(call: CallbackQuery):
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Add Product", callback_data="admin_add")],
+        [InlineKeyboardButton(text="✏️ Edit Product Price", callback_data="admin_list_edit")],
+        [InlineKeyboardButton(text="🗑️ Delete Product", callback_data="admin_list_delete")],
         [InlineKeyboardButton(text="🏠 Main Menu", callback_data="home")],
     ])
     await call.message.answer(f"{e(EMOJI_TEXT, '⚙️')} <b>Admin Control Panel</b>", reply_markup=kb)
@@ -373,15 +401,67 @@ async def admin_panel(call: CallbackQuery):
 async def admin_add(call: CallbackQuery):
     if not is_admin(call.from_user.id):
         return
-    await users.update_one({"_id": call.from_user.id}, {"$set": {"admin_flow": {"step": "name", "data": {}}}}, upsert=True)
+    await users.update_one({"_id": call.from_user.id}, {"$set": {"admin_flow": {"action": "add", "step": "name", "data": {}}}}, upsert=True)
     await call.message.answer("Send new product name:")
+    await call.answer()
+
+@dp.callback_query(F.data == "admin_list_edit")
+async def admin_list_edit(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    items = await products.find({"active": True}).to_list(length=20)
+    if not items:
+        await call.answer("No products found.", show_alert=True)
+        return
+    b = InlineKeyboardBuilder()
+    for p in items:
+        b.button(text=f"✏️ {p['name']} ({p.get('currency', 'INR')} {p['price']})", callback_data=f"edpr:{p['_id']}")
+    b.adjust(1)
+    await call.message.answer("Select product to edit price:", reply_markup=b.as_markup())
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("edpr:"))
+async def edit_product_price_prompt(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    product_id = call.data.split(":", 1)[1]
+    await users.update_one({"_id": call.from_user.id}, {"$set": {"admin_flow": {"action": "edit_price", "product_id": product_id}}})
+    await call.message.answer("Send the new price for this product (e.g., 499):")
+    await call.answer()
+
+@dp.callback_query(F.data == "admin_list_delete")
+async def admin_list_delete(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    items = await products.find({"active": True}).to_list(length=20)
+    if not items:
+        await call.answer("No products found.", show_alert=True)
+        return
+    b = InlineKeyboardBuilder()
+    for p in items:
+        b.button(text=f"🗑️ Delete {p['name']}", callback_data=f"delp:{p['_id']}")
+    b.adjust(1)
+    await call.message.answer("Select product to delete:", reply_markup=b.as_markup())
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("delp:"))
+async def delete_product(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return
+    product_id = call.data.split(":", 1)[1]
+    from bson import ObjectId
+    try:
+        await products.delete_one({"_id": ObjectId(product_id)})
+        await call.message.answer("✅ Product deleted successfully!")
+    except Exception:
+        await call.message.answer("Failed to delete product.")
     await call.answer()
 
 async def main():
     if not config.BOT_TOKEN or not config.MONGO_URI:
         raise RuntimeError("Set BOT_TOKEN and MONGO_URI in environment variables.")
     await bot.delete_webhook(drop_pending_updates=False)
-    log.info("Colorful Emoji Bot started successfully with Paytm QR & Webhook support.")
+    log.info("Store Bot started successfully with dynamic catalog, Admin panel & Paytm QR.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
