@@ -30,7 +30,7 @@ products = db.products
 orders = db.orders
 users = db.users
 
-# --- Premium Emoji IDs ---
+# --- Premium Emoji IDs (Only used in Texts, not buttons) ---
 EMOJI_HEART = "5465262274031659421"
 EMOJI_TEXT = "5258500400918587241"
 EMOJI_GIFT = "5355193051193059834"
@@ -62,24 +62,22 @@ def qr_png(data: str) -> bytes:
 # --- Keyboards ---
 
 def main_menu_kb(user_id: int):
-    """Main menu showing available products as buttons only."""
+    """Main menu showing available options."""
     b = InlineKeyboardBuilder()
+    b.button(text="Buy Groups", callback_data="show_groups", style="primary")
+    b.button(text="Topup Wallet", callback_data="topup_wallet", style="success")
+    b.button(text="How to Buy", callback_data="how_to_buy", style="primary")
     
-    # Fetch all active products to list them
-    # Note: We will fetch products dynamically in the handler, but we need a placeholder here
-    b.button(text="💳 Topup Wallet", callback_data="topup_wallet", style="success")
-    b.button(text="❓ How to Buy", callback_data="how_to_buy", style="primary")
-    
-    if getattr(config, "SUPPORT_URL", None):
-        b.button(text="🆘 Support", url=config.SUPPORT_URL, style="success")
+    if config.SUPPORT_URL:
+        b.button(text="Support", url=config.SUPPORT_URL, style="success")
     else:
-        b.button(text="🆘 Support", callback_data="support", style="danger")
+        b.button(text="Support", callback_data="support", style="danger")
         
-    if getattr(config, "PROOF_CHANNEL_URL", None):
-        b.button(text="🛡️ Proof", url=config.PROOF_CHANNEL_URL, style="primary")
+    if config.PROOF_CHANNEL_LINK:
+        b.button(text="Proof Channel", url=config.PROOF_CHANNEL_LINK, style="primary")
         
     if is_admin(user_id):
-        b.button(text="⚙️ Admin Panel", callback_data="admin", style="danger")
+        b.button(text="Admin Panel", callback_data="admin", style="danger")
         
     b.adjust(1, 1, 2, 1) 
     return b.as_markup()
@@ -88,24 +86,24 @@ def product_detail_kb(product_id: str, color: str):
     """Keyboard shown when a specific product is selected."""
     style = "success" if color == "success" else "danger" if color == "danger" else "primary"
     b = InlineKeyboardBuilder()
-    b.button(text=f"{e(EMOJI_SHOP, '🛍️')} Buy Now", callback_data=f"buy:{product_id}", style=style)
-    b.button(text=f"{e(EMOJI_START, '🏠')} Back to Main Menu", callback_data="home", style="danger")
+    b.button(text="Buy Now", callback_data=f"buy:{product_id}", style=style)
+    b.button(text="Back to Main Menu", callback_data="home", style="danger")
     b.adjust(1)
     return b.as_markup()
 
 def payment_keyboard(order_id: str):
     """Manual + Automatic payment options"""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ I Have Paid (Manual)", callback_data=f"manual_paid:{order_id}", style="success")],
-        [InlineKeyboardButton(text="🔄 Auto Verify (Under Maintenance)", callback_data=f"auto_maintenance:{order_id}", style="primary")],
-        [InlineKeyboardButton(text="🏠 Main Menu", callback_data="home", style="danger")],
+        [InlineKeyboardButton(text="I Have Paid (Manual)", callback_data=f"manual_paid:{order_id}", style="success")],
+        [InlineKeyboardButton(text="Auto Verify (Under Maintenance)", callback_data=f"auto_maintenance:{order_id}", style="primary")],
+        [InlineKeyboardButton(text="Main Menu", callback_data="home", style="danger")],
     ])
 
 def admin_approval_kb(order_id: str, user_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ Approve", callback_data=f"admin_approve:{order_id}:{user_id}", style="success"),
-            InlineKeyboardButton(text="❌ Reject", callback_data=f"admin_reject:{order_id}:{user_id}", style="danger")
+            InlineKeyboardButton(text="Approve", callback_data=f"admin_approve:{order_id}:{user_id}", style="success"),
+            InlineKeyboardButton(text="Reject", callback_data=f"admin_reject:{order_id}:{user_id}", style="danger")
         ]
     ])
 
@@ -142,52 +140,39 @@ async def start(message: Message):
     # Remove awaiting states
     await users.update_one(
         {"_id": message.from_user.id}, 
-        {"$unset": {"awaiting_topup": "", "awaiting_utr_for": "", "awaiting_photo_for": ""}},
+        {"$unset": {"awaiting_topup": "", "awaiting_utr_for": "", "awaiting_photo_for": "", "admin_flow": ""}},
         upsert=True
     )
     
-    # Get available products to show in the menu
-    items = await products.find({"active": True}).to_list(length=20)
-    
-    b = InlineKeyboardBuilder()
-    for p in items:
-        color = p.get("color", "primary")
-        style = "success" if color == "success" else "danger" if color == "danger" else "primary"
-        # Using the product name as the button text
-        b.button(text=f"🔥 {p['name']} - ₹{money(p['price'])}", callback_data=f"view_prod:{p['_id']}", style=style)
-    
-    # Add standard menu buttons
-    b.button(text="💳 Topup Wallet", callback_data="topup_wallet", style="success")
-    b.button(text="❓ How to Buy", callback_data="how_to_buy", style="primary")
-    
-    if getattr(config, "SUPPORT_URL", None):
-        b.button(text="🆘 Support", url=config.SUPPORT_URL, style="success")
-    else:
-        b.button(text="🆘 Support", callback_data="support", style="danger")
-        
-    if getattr(config, "PROOF_CHANNEL_URL", None):
-        b.button(text="🛡️ Proof", url=config.PROOF_CHANNEL_URL, style="primary")
-        
-    if is_admin(message.from_user.id):
-        b.button(text="⚙️ Admin Panel", callback_data="admin", style="danger")
-        
-    b.adjust(1, 1, 2, 2, 1) # Adjust layout as needed
-
     welcome_text = (
         f"{e(EMOJI_START, '🚀')} <b>ULTIMATE PREMIUM STORE</b> {e(EMOJI_HEART, '💖')}\n"
-        f"{e(EMOJI_TEXT, '✨')} <i>Choose a product below to purchase!</i> {e(EMOJI_18PLUS, '🔞')}\n\n"
+        f"{e(EMOJI_TEXT, '✨')} <i>Choose an option below to continue!</i> {e(EMOJI_18PLUS, '🔞')}\n\n"
         f"{e(EMOJI_THUNDER, '⚡')} <b>Limited Time Offers!</b>"
     )
     
-    if not items:
-        welcome_text = f"{e(EMOJI_THUNDER, '⚠️')} <b>No products available yet.</b> Admins have not added any products. Please check back later."
-    
-    await message.answer(welcome_text, reply_markup=b.as_markup())
+    await message.answer(welcome_text, reply_markup=main_menu_kb(message.from_user.id))
 
 @dp.callback_query(F.data == "home")
 async def home(call: CallbackQuery):
     # Re-trigger the start logic by calling the function directly
     await start(call.message)
+    await call.answer()
+
+@dp.callback_query(F.data == "show_groups")
+async def show_groups(call: CallbackQuery):
+    """Lists all available products as groups for purchase."""
+    items = await products.find({"active": True}).to_list(length=20)
+    if not items:
+        await call.answer("No groups available yet. Please check back later.", show_alert=True)
+        return
+        
+    b = InlineKeyboardBuilder()
+    for p in items:
+        # Use the product name as the group name
+        b.button(text=f"{p['name']} - ₹{money(p['price'])}", callback_data=f"view_prod:{p['_id']}", style="primary")
+    b.button(text="Back", callback_data="home", style="danger")
+    b.adjust(1)
+    await call.message.edit_text(f"{e(EMOJI_SHOP, '📂')} <b>Available Groups:</b>\nSelect a group to view details.", reply_markup=b.as_markup())
     await call.answer()
 
 @dp.callback_query(F.data.startswith("view_prod:"))
@@ -203,7 +188,6 @@ async def view_product(call: CallbackQuery):
         await call.answer("Product unavailable.", show_alert=True)
         return
         
-    # "Change full menu by the text of description heading and the button of buy and back to menu"
     product_desc = (
         f"<b>{e(EMOJI_SHOP, '🔥')} {p['name']}</b>\n\n"
         f"<b>Price:</b> <code>{p.get('currency', 'INR')} {money(p['price'])}</code>\n"
@@ -253,13 +237,14 @@ async def buy_product(call: CallbackQuery):
         "status": "pending",
         "delivered": False,
         "utr": None,
-        "proof_type": None,
+        "proof_file_id": None,
         "created_at": time.time(),
     }
     
-    # QR Generation
-    upi_id = getattr(config, "PAYTM_UPI_ID", "merchant@paytm")
-    order["qr_text"] = f"upi://pay?pa={upi_id}&pn=Store&am={order['amount']}&cu={order['currency']}&tr={order_id}"
+    # Use config variables
+    upi_id = config.PAYTM_UPI_ID
+    merchant_name = config.PAYTM_MERCHANT_NAME
+    order["qr_text"] = f"upi://pay?pa={upi_id}&pn={merchant_name}&am={order['amount']}&cu={order['currency']}&tr={order_id}"
     await orders.insert_one(order)
 
     photo = BufferedInputFile(qr_png(order["qr_text"]), filename="paytm-qr.png")
@@ -275,12 +260,10 @@ async def buy_product(call: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("auto_maintenance:"))
 async def auto_maintenance(call: CallbackQuery):
-    # Popup for Automatic Verification
     await call.answer("⚠️ This feature is under maintenance. Please use Manual Payment.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("manual_paid:"))
 async def manual_paid(call: CallbackQuery):
-    """Triggered when user clicks 'I Have Paid'"""
     order_id = call.data.split(":", 1)[1]
     order = await orders.find_one({"order_id": order_id, "user_id": call.from_user.id})
     if not order:
@@ -298,18 +281,19 @@ async def manual_paid(call: CallbackQuery):
 async def how_to_buy(call: CallbackQuery):
     await call.message.answer(
         f"{e(EMOJI_SUPPORT, '❓')} <b>How to Buy Guide</b>\n\n"
-        f"1. Select a product from the main menu.\n"
-        f"2. Click <b>Buy Now</b> to generate a payment QR.\n"
-        f"3. Scan and pay using any UPI app.\n"
-        f"4. Click <b>I Have Paid (Manual)</b>.\n"
-        f"5. Send your payment screenshot.\n"
-        f"6. Wait for Admin approval. Your link will be delivered instantly!"
+        f"1. Click <b>Buy Groups</b> from the main menu.\n"
+        f"2. Select a group/product to view details.\n"
+        f"3. Click <b>Buy Now</b> to generate a payment QR.\n"
+        f"4. Scan and pay using any UPI app.\n"
+        f"5. Click <b>I Have Paid (Manual)</b>.\n"
+        f"6. Send your payment screenshot.\n"
+        f"7. Wait for Admin approval. Your link will be delivered instantly!"
     )
     await call.answer()
 
 @dp.callback_query(F.data == "support")
 async def support(call: CallbackQuery):
-    await call.message.answer(f"{e(EMOJI_SUPPORT, '🆘')} Support contact: {getattr(config, 'SUPPORT_URL', 'Contact admin directly.')}")
+    await call.message.answer(f"{e(EMOJI_SUPPORT, '🆘')} Support contact: {config.SUPPORT_URL or 'Contact admin directly.'}")
     await call.answer()
 
 # --- Admin Approval/Rejection Handlers ---
@@ -373,6 +357,7 @@ async def handle_proof_photo(message: Message):
         order = await orders.find_one({"order_id": order_id})
         for admin_id in ADMIN_IDS:
             try:
+                # Send photo properly using the file_id
                 await bot.send_photo(
                     admin_id,
                     photo=photo_file_id,
@@ -385,6 +370,17 @@ async def handle_proof_photo(message: Message):
                 )
             except Exception as e:
                 log.error(f"Failed to notify admin {admin_id}: {e}")
+                # Fallback: send text if photo fails
+                await bot.send_message(
+                    admin_id,
+                    f"🚨 <b>New Manual Payment Proof (Text Fallback)</b>\n\n"
+                    f"👤 User: {message.from_user.full_name} (<code>{message.from_user.id}</code>)\n"
+                    f"📦 Product: {order['product_name']}\n"
+                    f"💰 Amount: {order['amount']} {order['currency']}\n"
+                    f"🆔 Order ID: <code>{order_id}</code>\n"
+                    f"⚠️ Photo could not be sent. Please ask user for proof.",
+                    reply_markup=admin_approval_kb(order_id, message.from_user.id)
+                )
         return
     else:
         await message.answer(f"{e(EMOJI_THUNDER, '⚠️')} No pending order requires a photo right now. Please use the menu.")
@@ -449,6 +445,27 @@ async def text_router(message: Message):
             await message.answer(prompt)
             return
 
+        elif action == "edit_price":
+            product_id = flow["product_id"]
+            try:
+                new_price = money(Decimal(message.text.strip()))
+                from bson import ObjectId
+                await products.update_one({"_id": ObjectId(product_id)}, {"$set": {"price": new_price}})
+                await users.update_one({"_id": message.from_user.id}, {"$unset": {"admin_flow": ""}})
+                await message.answer(f"{e(EMOJI_HEART, '✅')} Product price updated successfully to {new_price}!", reply_markup=main_menu_kb(message.from_user.id))
+            except InvalidOperation:
+                await message.answer("Invalid price format. Send a valid number (e.g. 499):")
+            return
+            
+        elif action == "edit_button_name":
+            product_id = flow["product_id"]
+            new_name = message.text.strip()
+            from bson import ObjectId
+            await products.update_one({"_id": ObjectId(product_id)}, {"$set": {"name": new_name}})
+            await users.update_one({"_id": message.from_user.id}, {"$unset": {"admin_flow": ""}})
+            await message.answer(f"{e(EMOJI_HEART, '✅')} Product button name updated to '{new_name}'!", reply_markup=main_menu_kb(message.from_user.id))
+            return
+
     await message.answer(f"{e(EMOJI_START, '🚀')} Send /start to open the store dashboard.")
 
 # --- Admin Panel Handlers ---
@@ -460,6 +477,9 @@ async def admin_panel(call: CallbackQuery):
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Add Product", callback_data="admin_add", style="success")],
+        [InlineKeyboardButton(text="✏️ Edit Product Price", callback_data="admin_list_edit", style="primary")],
+        [InlineKeyboardButton(text="🏷️ Edit Button Name", callback_data="admin_list_edit_name", style="primary")],
+        [InlineKeyboardButton(text="🗑️ Delete Product", callback_data="admin_list_delete", style="danger")],
         [InlineKeyboardButton(text="🏠 Main Menu", callback_data="home", style="primary")],
     ])
     await call.message.answer(f"{e(EMOJI_TEXT, '⚙️')} <b>Admin Control Panel</b>", reply_markup=kb)
@@ -473,7 +493,77 @@ async def admin_add(call: CallbackQuery):
         {"$set": {"admin_flow": {"action": "add", "step": "name", "data": {}}}}, 
         upsert=True
     )
-    await call.message.answer("Send new product name:")
+    await call.message.answer("Send new product name (this will also be the button name):")
+    await call.answer()
+
+@dp.callback_query(F.data == "admin_list_edit")
+async def admin_list_edit(call: CallbackQuery):
+    if not is_admin(call.from_user.id): return
+    items = await products.find({"active": True}).to_list(length=20)
+    if not items:
+        await call.answer("No products found.", show_alert=True)
+        return
+    b = InlineKeyboardBuilder()
+    for p in items:
+        b.button(text=f"✏️ {p['name']} ({p.get('currency', 'INR')} {p['price']})", callback_data=f"edpr:{p['_id']}")
+    b.adjust(1)
+    await call.message.answer("Select product to edit price:", reply_markup=b.as_markup())
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("edpr:"))
+async def edit_product_price_prompt(call: CallbackQuery):
+    if not is_admin(call.from_user.id): return
+    product_id = call.data.split(":", 1)[1]
+    await users.update_one({"_id": call.from_user.id}, {"$set": {"admin_flow": {"action": "edit_price", "product_id": product_id}}})
+    await call.message.answer("Send the new price for this product (e.g., 499):")
+    await call.answer()
+
+@dp.callback_query(F.data == "admin_list_edit_name")
+async def admin_list_edit_name(call: CallbackQuery):
+    if not is_admin(call.from_user.id): return
+    items = await products.find({"active": True}).to_list(length=20)
+    if not items:
+        await call.answer("No products found.", show_alert=True)
+        return
+    b = InlineKeyboardBuilder()
+    for p in items:
+        b.button(text=f"🏷️ {p['name']}", callback_data=f"edname:{p['_id']}")
+    b.adjust(1)
+    await call.message.answer("Select product to edit button name:", reply_markup=b.as_markup())
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("edname:"))
+async def edit_product_name_prompt(call: CallbackQuery):
+    if not is_admin(call.from_user.id): return
+    product_id = call.data.split(":", 1)[1]
+    await users.update_one({"_id": call.from_user.id}, {"$set": {"admin_flow": {"action": "edit_button_name", "product_id": product_id}}})
+    await call.message.answer("Send the new button name for this product:")
+    await call.answer()
+
+@dp.callback_query(F.data == "admin_list_delete")
+async def admin_list_delete(call: CallbackQuery):
+    if not is_admin(call.from_user.id): return
+    items = await products.find({"active": True}).to_list(length=20)
+    if not items:
+        await call.answer("No products found.", show_alert=True)
+        return
+    b = InlineKeyboardBuilder()
+    for p in items:
+        b.button(text=f"🗑️ Delete {p['name']}", callback_data=f"delp:{p['_id']}")
+    b.adjust(1)
+    await call.message.answer("Select product to delete:", reply_markup=b.as_markup())
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("delp:"))
+async def delete_product(call: CallbackQuery):
+    if not is_admin(call.from_user.id): return
+    product_id = call.data.split(":", 1)[1]
+    from bson import ObjectId
+    try:
+        await products.delete_one({"_id": ObjectId(product_id)})
+        await call.message.answer(f"{e(EMOJI_HEART, '✅')} Product deleted successfully!")
+    except Exception:
+        await call.message.answer(f"{e(EMOJI_THUNDER, '❌')} Failed to delete product.")
     await call.answer()
 
 # --- Main ---
@@ -482,7 +572,7 @@ async def main():
     if not config.BOT_TOKEN or not config.MONGO_URI:
         raise RuntimeError("Set BOT_TOKEN and MONGO_URI in environment variables.")
     await bot.delete_webhook(drop_pending_updates=False)
-    log.info("Premium Store Bot started. Admin must add products.")
+    log.info("Premium Store Bot started. Admin panel ready.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
