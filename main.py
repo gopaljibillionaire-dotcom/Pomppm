@@ -33,7 +33,8 @@ products = db.products
 orders = db.orders
 users = db.users
 
-# --- Premium Emojis Setup ---
+# --- Safe Premium Emojis Setup ---
+# If an ID is invalid, the helper function will fallback to the text emoji.
 EMOJI_HEART = "5465262274031659421"
 EMOJI_TEXT = "5258500400918587241"
 EMOJI_GIFT = "5355193051193059834"
@@ -44,7 +45,7 @@ EMOJI_18PLUS = "5201920821043422202"
 EMOJI_THUNDER = "5992366958681527437"
 EMOJI_WATER = "5834455158829879029"
 EMOJI_PIN = "5292291996717690768"
-EMOJI_MONEY = "💰" # Standard fallback
+EMOJI_MONEY = "💰" 
 EMOJI_FIRE = "🔥"
 
 ADMIN_IDS = set(config.ADMIN_IDS)
@@ -53,6 +54,9 @@ def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 def e(emoji_id: str, fallback: str) -> str:
+    """Safely generate premium emoji HTML, falling back to text if ID is empty."""
+    if not emoji_id:
+        return fallback
     return f'<tg-emoji emoji-id="{emoji_id}">{fallback}</tg-emoji>'
 
 def money(amount) -> str:
@@ -163,7 +167,6 @@ async def deliver_order(order_doc):
         await bot.send_message(claimed["user_id"], f"{e(EMOJI_HEART, '❤️')} Payment confirmed, but this product is currently unavailable. Contact support.")
         return
         
-    # Send the actual link to the user
     await bot.send_message(
         claimed["user_id"],
         f"{e(EMOJI_GIFT, '🎁')} <b>Payment Verified & Delivered Successfully!</b>\n\n"
@@ -201,7 +204,6 @@ async def start(message: Message):
 async def show_all_products(call: CallbackQuery):
     items = await products.find({"active": True}).sort("created_at", -1).to_list(length=20)
     if not items:
-        # Seed default products if empty for easy demo/testing
         default_prods = [
             {"name": "ALL MIX 😍⚡", "price": "29.00", "currency": "INR", "url": "https://t.me/+example1", "description": "All mix premium collection.", "color": "danger", "active": True, "created_at": time.time()},
             {"name": "INDIAN DESI 😍⚡", "price": "49.00", "currency": "INR", "url": "https://t.me/+example2", "description": "Indian Desi exclusive.", "color": "primary", "active": True, "created_at": time.time()},
@@ -254,7 +256,6 @@ async def buy_product(call: CallbackQuery):
         "created_at": time.time(),
     }
     
-    # Try Automatic Gateway First
     provider = await make_payment(order_id, order["amount"], call.from_user.id)
     is_manual = True
     
@@ -263,7 +264,6 @@ async def buy_product(call: CallbackQuery):
         order["qr_text"] = provider.get("qr_text") or provider.get("upi_uri")
         is_manual = False
     
-    # Fallback to Manual UPI QR if gateway is not configured
     if not order.get("qr_text"):
         upi_id = getattr(config, "PAYTM_UPI_ID", "merchant@paytm")
         order["qr_text"] = f"upi://pay?pa={upi_id}&pn=Store&am={order['amount']}&cu={order['currency']}&tr={order_id}"
@@ -313,8 +313,6 @@ async def check_payment(call: CallbackQuery):
     else:
         await call.answer("Payment not detected yet. Complete payment or submit proof.", show_alert=True)
 
-# --- Manual Payment Verification Flow ---
-
 @dp.callback_query(F.data.startswith("manual_paid:"))
 async def manual_paid(call: CallbackQuery):
     order_id = call.data.split(":", 1)[1]
@@ -346,10 +344,8 @@ async def handle_proof_photo(message: Message):
     
     await users.update_one({"_id": message.from_user.id}, {"$unset": {"awaiting_proof_for": ""}})
     
-    # Notify User
     await message.answer(f"{e(EMOJI_HEART, '✅')} Proof submitted! Admin will verify and approve your order shortly.")
     
-    # Notify Admins
     admin_msg = (
         f"🚨 <b>New Payment Proof Submitted</b>\n\n"
         f"Order ID: <code>{order_id}</code>\n"
@@ -389,7 +385,6 @@ async def admin_approve(call: CallbackQuery):
         {"$set": {"status": "paid", "verified_at": time.time(), "verification_method": "manual_admin"}}
     )
     
-    # Deliver order
     fresh_order = await orders.find_one({"order_id": order_id})
     await deliver_order(fresh_order)
     
@@ -422,8 +417,6 @@ async def admin_reject(call: CallbackQuery):
     await call.message.edit_caption(caption=call.message.caption + "\n\n❌ <b>Rejected by Admin</b>")
     await call.answer("Order Rejected and User Notified.")
 
-# --- Informational Handlers ---
-
 @dp.callback_query(F.data == "how_to_buy")
 async def how_to_buy(call: CallbackQuery):
     text = (
@@ -444,8 +437,6 @@ async def how_to_buy(call: CallbackQuery):
 async def support(call: CallbackQuery):
     await call.message.answer(f"{e(EMOJI_SUPPORT, '🆘')} Support contact: {config.SUPPORT_URL or 'Contact admin directly.'}")
     await call.answer()
-
-# --- Admin Panel ---
 
 @dp.callback_query(F.data == "admin")
 async def admin_panel(call: CallbackQuery):
@@ -520,13 +511,10 @@ async def delete_product(call: CallbackQuery):
         await call.message.answer("Failed to delete product.")
     await call.answer()
 
-# --- Text Router (Handles Admin Flow & User Proofs) ---
-
 @dp.message(F.text)
 async def text_router(message: Message):
     user = await users.find_one({"_id": message.from_user.id})
     
-    # Handle UTR text if user sends it without photo
     if user and user.get("awaiting_proof_for"):
         order_id = user["awaiting_proof_for"]
         utr = message.text.strip()
@@ -537,7 +525,6 @@ async def text_router(message: Message):
         await message.answer(f"{e(EMOJI_HEART, '✅')} UTR <code>{utr}</code> saved. Admin will verify shortly.")
         await users.update_one({"_id": message.from_user.id}, {"$unset": {"awaiting_proof_for": ""}})
         
-        # Notify Admins
         order = await orders.find_one({"order_id": order_id})
         admin_msg = (
             f"🚨 <b>New UTR Submitted</b>\n\n"
@@ -555,7 +542,6 @@ async def text_router(message: Message):
                 log.error(f"Failed to send UTR to admin {admin_id}: {e}")
         return
 
-    # Admin Add Product Flow
     if is_admin(message.from_user.id) and user and user.get("admin_flow"):
         flow = user["admin_flow"]
         action = flow.get("action")
@@ -617,7 +603,6 @@ async def main():
     if not config.BOT_TOKEN or not config.MONGO_URI:
         raise RuntimeError("Set BOT_TOKEN and MONGO_URI in environment variables.")
     
-    # Ensure indexes
     await orders.create_index("order_id", unique=True)
     await users.create_index("_id")
     
