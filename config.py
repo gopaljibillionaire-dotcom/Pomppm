@@ -1,31 +1,18 @@
-"""Environment-based configuration. Set these as Heroku Config Vars."""
 import os
+from dotenv import load_dotenv
 
-def _csv_ints(value: str):
-    result = set()
-    for item in value.split(","):
-        item = item.strip()
-        if item:
-            try:
-                result.add(int(item))
-            except ValueError:
-                raise RuntimeError("ADMIN_IDS must be comma-separated Telegram numeric user IDs.")
-    return result
+load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-ADMIN_IDS = _csv_ints(os.getenv("ADMIN_IDS", ""))
-MONGO_URI = os.getenv("MONGO_URI", "").strip()
-MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "telegram_selling_bot").strip()
-SUPPORT_URL = os.getenv("SUPPORT_URL", "").strip()
-PROOF_CHANNEL_LINK = os.getenv("PROOF_CHANNEL_LINK", "https://t.sch/your_proof_channel").strip()
-PAYTM_UPI_ID = os.getenv("PAYTM_UPI_ID", "yourmerchant@paytm").strip()
-PAYTM_MERCHANT_NAME = os.getenv("PAYTM_MERCHANT_NAME", "Store Merchant").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+API_ID = int(os.getenv("API_ID", "0"))
+API_HASH = os.getenv("API_HASH")
+MONGO_URI = os.getenv("MONGO_URI")
+OXAPAY_MERCHANT_API_KEY = os.getenv("OXAPAY_MERCHANT_API_KEY")
+SESSION_ENCRYPTION_KEY = os.getenv("SESSION_ENCRYPTION_KEY")
+BASE_URL = os.getenv("BASE_URL", "https://your-app.herokuapp.com")
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "default_webhook_secret")
+PORT = int(os.getenv("PORT", "8080"))
 
-# Configure only after obtaining authorized credentials and the provider's API specification.
-PAYMENT_API_URL = os.getenv("PAYMENT_API_URL", "").strip()       
-PAYMENT_STATUS_URL = os.getenv("PAYMENT_STATUS_URL", "").strip() 
-PAYMENT_API_KEY = os.getenv("PAYMENT_API_KEY", "").strip()
-PAYMENT_WEBHOOK_URL = os.getenv("PAYMENT_WEBHOOK_URL", "").strip()
-PAYMENT_CURRENCY = os.getenv("PAYMENT_CURRENCY", "INR").strip().upper()
-
-    
+if not BOT_TOKEN or not MONGO_URI or not SESSION_ENCRYPTION_KEY:
+    raise ValueError("Missing critical environment variables (BOT_TOKEN, MONGO_URI, SESSION_ENCRYPTION_KEY).")
